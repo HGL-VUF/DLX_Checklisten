@@ -80,7 +80,7 @@ def fuege_pdfs_zusammen(maengel_path, abnahme_ordner, ausgabe_ordner, seiten_dic
 st.set_page_config(page_title="Checklisten-Merger", layout="centered")
 
 # === Logo anzeigen ohne Abrundung ===
-logo_path = "C:/Users/VUF/Checklisten/Halter_Logo_Anthrazit_RGB_Online.png"
+logo_path = "Halter_Logo_Anthrazit_RGB_Online.png"
 
 def get_base64_image(image_path):
     with open(image_path, "rb") as img_file:
