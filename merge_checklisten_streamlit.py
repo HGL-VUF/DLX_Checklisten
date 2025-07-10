@@ -1,91 +1,62 @@
-import os
-import re
-import shutil
-import tempfile
-from PIL import Image
-
 import streamlit as st
+import os
+import io
+import zipfile
+import base64
 import pdfplumber
 from PyPDF2 import PdfReader, PdfWriter
 import pandas as pd
-import base64
+from datetime import datetime
 
-def extrahiere_maengel_nach_checkliste(maengel_pdf_path):
-    seiten_dict = {}
-    with pdfplumber.open(maengel_pdf_path) as pdf:
-        for i, seite in enumerate(pdf.pages):
-            text = seite.extract_text()
-            if not text:
-                continue
-            matches = re.findall(r"Checkliste:\s*([^\s]+)", text)
-            unique_ids = set(matches)
-            for nummer in unique_ids:
-                nummer = nummer.strip()
-                if nummer not in seiten_dict:
-                    seiten_dict[nummer] = set()
-                seiten_dict[nummer].add(i)
-    return {k: sorted(v) for k, v in seiten_dict.items()}
-
-
-def fuege_pdfs_zusammen(maengel_path, abnahme_ordner, ausgabe_ordner, seiten_dict):
-    maengel_reader = PdfReader(maengel_path)
-    os.makedirs(ausgabe_ordner, exist_ok=True)
-
-    erfolge = []
-    fehler = []
-    daten_fuer_excel = []
-
-    # Alle Checklisten im Abnahmeordner durchgehen
-    for datei in os.listdir(abnahme_ordner):
-        if not datei.endswith(".pdf"):
-            continue
-
-        nummer = os.path.splitext(datei)[0]
-        abnahme_pfad = os.path.join(abnahme_ordner, datei)
-        ausgabe_pfad = os.path.join(ausgabe_ordner, f"{nummer}_mit_Maengeln.pdf")
-
-        writer = PdfWriter()
-        try:
-            abnahme_reader = PdfReader(abnahme_pfad)
-            for seite in abnahme_reader.pages:
-                writer.add_page(seite)
-
-            maengel_seiten = seiten_dict.get(nummer, [])
-
-            for i in maengel_seiten:
-                writer.add_page(maengel_reader.pages[i])
-
-            with open(ausgabe_pfad, "wb") as f_out:
-                writer.write(f_out)
-
-            erfolge.append(f"✅ {nummer} verarbeitet ({len(maengel_seiten)} Mängel-Seiten)")
-            daten_fuer_excel.append({
-                "Checkliste": nummer,
-                "Mängel-Seiten": len(maengel_seiten),
-                "Ausgabepfad": ausgabe_pfad
-            })
-
-        except Exception as e:
-            fehler.append(f"⚠️ Fehler bei {nummer}: {e}")
-            daten_fuer_excel.append({
-                "Checkliste": nummer,
-                "Mängel-Seiten": "⚠️",
-                "Ausgabepfad": f"Fehler: {e}"
-            })
-
-    return erfolge, fehler, daten_fuer_excel
-
-
-
-st.set_page_config(page_title="Checklisten-Merger", layout="centered")
-
-# === Logo anzeigen ohne Abrundung ===
-logo_path = "Halter_Logo_Anthrazit_RGB_Online.png"
+# === Hilfsfunktionen ===
 
 def get_base64_image(image_path):
     with open(image_path, "rb") as img_file:
         return base64.b64encode(img_file.read()).decode()
 
+def extract_maengel_by_checkliste(maengel_pdf):
+    checkliste_to_pages = {}
+    reader = PdfReader(maengel_pdf)
+    
+    for i, page in enumerate(reader.pages):
+        text = page.extract_text()
+        if text:
+            for line in text.split("\n"):
+                if "Checkliste:" in line:
+                    parts = line.split("Checkliste:")
+                    if len(parts) > 1:
+                        nr = parts[1].strip()
+                        if nr not in checkliste_to_pages:
+                            checkliste_to_pages[nr] = set()
+                        checkliste_to_pages[nr].add(i)  # set statt liste
+
+    # In sortierte Liste umwandeln, um Reihenfolge zu behalten
+    return {k: sorted(v) for k, v in checkliste_to_pages.items()}
+
+def get_checklistennummer_from_filename(filename):
+    return os.path.splitext(os.path.basename(filename))[0]
+
+def merge_pdfs(checklist_pdf, maengel_pages, maengel_reader):
+    writer = PdfWriter()
+    reader_check = PdfReader(checklist_pdf)
+    
+    for page in reader_check.pages:
+        writer.add_page(page)
+    
+    for i in maengel_pages:
+        writer.add_page(maengel_reader.pages[i])
+    
+    output_stream = io.BytesIO()
+    writer.write(output_stream)
+    output_stream.seek(0)
+    return output_stream
+
+# === Streamlit UI ===
+
+st.set_page_config(page_title="Checklisten-Merger", layout="centered")
+
+# Logo anzeigen (aus Repository)
+logo_path = "Halter_Logo_Anthrazit_RGB_Online.png"
 try:
     img_base64 = get_base64_image(logo_path)
     st.markdown(
@@ -96,52 +67,52 @@ try:
         """,
         unsafe_allow_html=True
     )
-except Exception as e:
-    st.warning(f"Logo konnte nicht geladen werden: {e}")
+except:
+    st.warning("Logo konnte nicht geladen werden.")
 
 st.title("Dalux Field")
 st.title("Abnahmeprotokolle & Mängelliste zusammenführen")
 
+checklist_files = st.file_uploader("📄 Abnahmeprotokolle (mehrere PDFs)", type="pdf", accept_multiple_files=True)
+maengel_file = st.file_uploader("📋 Mängelliste (eine PDF)", type="pdf")
 
-maengel_pdf = st.file_uploader("🔍 Mängelliste (PDF)", type=["pdf"])
-abnahme_ordner = st.text_input("📂 Pfad zum Abnahmeprotokoll-Ordner", value="Pfad angeben: C:\...  ('""' löschen) ")
-ausgabe_ordner = st.text_input("💾 Zielordner für Ausgabe", value="Pfad angeben: C:\... ('""' löschen)")
+if st.button("✅ Verarbeiten") and checklist_files and maengel_file:
 
-if st.button("🚀 Verarbeiten"):
-    if not maengel_pdf:
-        st.error("Bitte lade eine Mängelliste hoch.")
-    elif not os.path.isdir(abnahme_ordner):
-        st.error("Der Abnahmeprotokoll-Ordner ist ungültig.")
-    else:
-        with st.spinner("🔄 Verarbeite PDFs..."):
+    maengel_reader = PdfReader(maengel_file)
+    checkliste_to_pages = extract_maengel_by_checkliste(maengel_file)
 
-            # Temporäre Datei für hochgeladenes PDF
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(maengel_pdf.read())
-                maengel_path = tmp.name
+    zip_buffer = io.BytesIO()
+    excel_rows = []
 
-            seiten_dict = extrahiere_maengel_nach_checkliste(maengel_path)
-            erfolge, fehler, daten_fuer_excel = fuege_pdfs_zusammen(
-                maengel_path, abnahme_ordner, ausgabe_ordner, seiten_dict
-            )
+    with zipfile.ZipFile(zip_buffer, "w") as zipf:
+        for checklist_file in checklist_files:
+            checklist_number = get_checklistennummer_from_filename(checklist_file.name)
+            maengel_pages = checkliste_to_pages.get(checklist_number, [])
 
-            # Excel-Datei erzeugen
-            excel_df = pd.DataFrame(daten_fuer_excel)
-            excel_path = os.path.join(ausgabe_ordner, "uebersicht_checklisten.xlsx")
-            excel_df.to_excel(excel_path, index=False)
+            merged_pdf = merge_pdfs(checklist_file, maengel_pages, maengel_reader)
 
-        st.success("✅ Verarbeitung abgeschlossen!")
+            merged_name = f"{checklist_number}_zusammengefuehrt.pdf"
+            zipf.writestr(merged_name, merged_pdf.read())
 
-        if erfolge:
-            st.subheader("✅ Erfolgreich:")
-            st.write("\n".join(erfolge))
+            excel_rows.append({
+                "Checkliste": checklist_number,
+                "Mängel-Seiten": ", ".join(str(p+1) for p in maengel_pages) if maengel_pages else "Keine"
+            })
 
-        if fehler:
-            st.subheader("⚠️ Fehler / Warnungen:")
-            st.warning("\n".join(fehler))
+        # Excel erstellen
+        df = pd.DataFrame(excel_rows)
+        excel_buffer = io.BytesIO()
+        df.to_excel(excel_buffer, index=False)
+        zipf.writestr("Übersicht.xlsx", excel_buffer.getvalue())
 
-        st.subheader("📊 Excel-Übersicht:")
-        st.dataframe(excel_df)
+    zip_buffer.seek(0)
 
-        with open(excel_path, "rb") as f:
-            st.download_button("📥 Excel herunterladen", f, file_name="uebersicht_checklisten.xlsx")
+    st.success("✅ Verarbeitung abgeschlossen!")
+
+    # Download-Link
+    st.download_button(
+        label="📥 ZIP-Datei herunterladen",
+        data=zip_buffer,
+        file_name=f"Checklisten_Merged_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.zip",
+        mime="application/zip"
+    )
