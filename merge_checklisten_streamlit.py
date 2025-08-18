@@ -17,21 +17,31 @@ def get_base64_image(image_path):
 def extract_maengel_by_checkliste(maengel_pdf):
     checkliste_to_pages = {}
     reader = PdfReader(maengel_pdf)
+    last_checkliste = None
     
     for i, page in enumerate(reader.pages):
         text = page.extract_text()
+        found_checkliste = None
+        
         if text:
             for line in text.split("\n"):
                 if "Checkliste:" in line:
                     parts = line.split("Checkliste:")
                     if len(parts) > 1:
-                        nr = parts[1].strip()
-                        if nr not in checkliste_to_pages:
-                            checkliste_to_pages[nr] = set()
-                        checkliste_to_pages[nr].add(i)  # set statt liste
-
-    # In sortierte Liste umwandeln, um Reihenfolge zu behalten
-    return {k: sorted(v) for k, v in checkliste_to_pages.items()}
+                        found_checkliste = parts[1].strip()
+                        last_checkliste = found_checkliste  # Neue Checkliste merken
+                        break
+        
+        # Wenn keine Checkliste gefunden → Seite gehört noch zum vorherigen Mangel
+        if not found_checkliste and last_checkliste:
+            found_checkliste = last_checkliste
+        
+        if found_checkliste:
+            if found_checkliste not in checkliste_to_pages:
+                checkliste_to_pages[found_checkliste] = []
+            checkliste_to_pages[found_checkliste].append(i)  # Reihenfolge behalten
+    
+    return checkliste_to_pages
 
 def get_checklistennummer_from_filename(filename):
     return os.path.splitext(os.path.basename(filename))[0]
@@ -116,3 +126,4 @@ if st.button("✅ Verarbeiten") and checklist_files and maengel_file:
         file_name=f"Checklisten_Merged_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.zip",
         mime="application/zip"
     )
+
